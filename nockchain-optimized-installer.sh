@@ -1,10 +1,9 @@
 #!/bin/bash
 
-# Nockchain Optimized Mining Installation Script (ROOT VERSION)
+# Nockchain Optimized Mining Installation Script
 # Optimized for Ubuntu 22.04 VPS Mining
 # Author: AI Assistant
-# Version: 1.0 (Root-enabled)
-# WARNING: Running as root is not recommended for security reasons
+# Version: 1.0
 
 set -e
 
@@ -20,9 +19,9 @@ NC='\033[0m' # No Color
 # Configuration
 MINING_PUBKEY="3h6rsTmSpQGPF9eTiD1KK4qkKo3a1EdJ9BaE3itdUqhnDL2Hjh4Z6JPaFBHjjcicvadrxKcUsoVMJb1EkNREd3k5HLao6XSE2NV7tmuEKzAySZG713WGQoWCSJaC4dvmpBx3"
 NOCKCHAIN_REPO="https://github.com/zorp-corp/nockchain"
-INSTALL_DIR="/root/nockchain"  # Changed to root directory
+INSTALL_DIR="$HOME/nockchain"
 MINERS_COUNT=4  # Number of miner instances to run
-MIN_RAM_GB=64   # Minimum RAM requirement in GB
+MIN_RAM_GB=32   # Minimum RAM requirement in GB (reduced for better compatibility)
 
 # Peer list for better connectivity
 PEER_LIST=(
@@ -63,13 +62,6 @@ print_header() {
 check_system_requirements() {
     print_header "Checking System Requirements"
     
-    # Root warning
-    if [[ $EUID -eq 0 ]]; then
-        print_warning "Running as root - this is not recommended for security reasons"
-        print_warning "Consider creating a regular user account for mining"
-        sleep 3
-    fi
-    
     # Check OS
     if [[ ! -f /etc/os-release ]]; then
         print_error "Cannot determine OS version"
@@ -103,6 +95,16 @@ check_system_requirements() {
         # Reduce miner count for low RAM systems
         MINERS_COUNT=1
         print_warning "Reduced miner instances to 1 due to limited RAM"
+    elif [[ $total_ram_gb -lt 64 ]]; then
+        print_warning "RAM is below optimal 64GB. Adjusting miner configuration for better performance."
+        # Optimize for systems with 32-64GB RAM
+        if [[ $total_ram_gb -ge 48 ]]; then
+            MINERS_COUNT=3
+            print_status "Set miner instances to 3 for ${total_ram_gb}GB RAM"
+        else
+            MINERS_COUNT=2
+            print_status "Set miner instances to 2 for ${total_ram_gb}GB RAM"
+        fi
     fi
     
     # Check CPU cores
@@ -133,36 +135,46 @@ optimize_system() {
     
     # Enable memory overcommit
     print_status "Enabling memory overcommit..."
-    sysctl -w vm.overcommit_memory=1
-    echo 'vm.overcommit_memory=1' | tee -a /etc/sysctl.conf
+    sudo sysctl -w vm.overcommit_memory=1
+    echo 'vm.overcommit_memory=1' | sudo tee -a /etc/sysctl.conf
     
     # Optimize swap settings
     print_status "Optimizing swap settings..."
-    sysctl -w vm.swappiness=10
-    echo 'vm.swappiness=10' | tee -a /etc/sysctl.conf
+    sudo sysctl -w vm.swappiness=10
+    echo 'vm.swappiness=10' | sudo tee -a /etc/sysctl.conf
     
     # Increase file descriptor limits
     print_status "Increasing file descriptor limits..."
-    echo "* soft nofile 65536" | tee -a /etc/security/limits.conf
-    echo "* hard nofile 65536" | tee -a /etc/security/limits.conf
+    echo "* soft nofile 65536" | sudo tee -a /etc/security/limits.conf
+    echo "* hard nofile 65536" | sudo tee -a /etc/security/limits.conf
     
     # Optimize network settings
     print_status "Optimizing network settings..."
-    sysctl -w net.core.rmem_max=134217728
-    sysctl -w net.core.wmem_max=134217728
-    sysctl -w net.ipv4.tcp_rmem="4096 65536 134217728"
-    sysctl -w net.ipv4.tcp_wmem="4096 65536 134217728"
+    sudo sysctl -w net.core.rmem_max=134217728
+    sudo sysctl -w net.core.wmem_max=134217728
+    sudo sysctl -w net.ipv4.tcp_rmem="4096 65536 134217728"
+    sudo sysctl -w net.ipv4.tcp_wmem="4096 65536 134217728"
     
     # Create swap if needed and RAM is limited
-    if [[ $total_ram_gb -lt 32 ]]; then
-        print_status "Creating additional swap space..."
+    if [[ $total_ram_gb -lt 64 ]]; then
+        print_status "Creating additional swap space for better performance..."
         if [[ ! -f /swapfile ]]; then
-            fallocate -l 8G /swapfile
-            chmod 600 /swapfile
-            mkswap /swapfile
-            swapon /swapfile
-            echo '/swapfile none swap sw 0 0' | tee -a /etc/fstab
-            print_status "8GB swap file created"
+            # Calculate swap size based on available RAM
+            if [[ $total_ram_gb -ge 48 ]]; then
+                swap_size="16G"
+            elif [[ $total_ram_gb -ge 32 ]]; then
+                swap_size="12G"
+            else
+                swap_size="8G"
+            fi
+            
+            print_status "Creating ${swap_size} swap file..."
+            sudo fallocate -l $swap_size /swapfile
+            sudo chmod 600 /swapfile
+            sudo mkswap /swapfile
+            sudo swapon /swapfile
+            echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+            print_status "${swap_size} swap file created"
         fi
     fi
 }
@@ -173,12 +185,12 @@ install_dependencies() {
     
     # Update system
     print_status "Updating system packages..."
-    apt-get update -y
-    apt-get upgrade -y
+    sudo apt-get update -y
+    sudo apt-get upgrade -y
     
     # Install essential packages
     print_status "Installing essential packages..."
-    apt-get install -y \
+    sudo apt-get install -y \
         curl \
         iptables \
         build-essential \
@@ -209,12 +221,12 @@ install_dependencies() {
         python3 \
         python3-pip
     
-    # Install Rust for root
+    # Install Rust
     print_status "Installing Rust..."
     if ! command -v rustc &> /dev/null; then
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-        source /root/.cargo/env
-        export PATH="/root/.cargo/bin:$PATH"
+        source $HOME/.cargo/env
+        export PATH="$HOME/.cargo/bin:$PATH"
     else
         print_status "Rust already installed"
     fi
@@ -253,7 +265,7 @@ build_nockchain() {
     # Install hoonc compiler
     print_status "Installing Hoon compiler..."
     make install-hoonc
-    export PATH="/root/.cargo/bin:$PATH"
+    export PATH="$HOME/.cargo/bin:$PATH"
     
     # Build the project
     print_status "Building Nockchain (this may take a while)..."
@@ -262,11 +274,11 @@ build_nockchain() {
     # Install wallet and nockchain binaries
     print_status "Installing Nockchain wallet..."
     make install-nockchain-wallet
-    export PATH="/root/.cargo/bin:$PATH"
+    export PATH="$HOME/.cargo/bin:$PATH"
     
     print_status "Installing Nockchain node..."
     make install-nockchain
-    export PATH="/root/.cargo/bin:$PATH"
+    export PATH="$HOME/.cargo/bin:$PATH"
     
     # Verify installation
     if ! command -v nockchain &> /dev/null; then
@@ -287,10 +299,10 @@ setup_wallet() {
     print_header "Setting Up Wallet"
     
     cd "$INSTALL_DIR"
-    export PATH="/root/.cargo/bin:$PATH"
+    export PATH="$HOME/.cargo/bin:$PATH"
     
     # Check if wallet already exists
-    if [[ -f "/root/.nockchain/wallet.dat" ]]; then
+    if [[ -f "$HOME/.nockchain/wallet.dat" ]]; then
         print_status "Wallet already exists, skipping wallet generation"
         return
     fi
@@ -335,12 +347,12 @@ cd "$INSTALL_DIR/$miner_dir"
 rm -rf ./.data.nockchain .socket/nockchain_npc.sock
 
 # Set environment
-export PATH="/root/.cargo/bin:\$PATH"
+export PATH="\$HOME/.cargo/bin:\$PATH"
 export RUST_LOG=info,nockchain=info,nockchain_libp2p_io=info,libp2p=info,libp2p_quic=info
 export MINIMAL_LOG_FORMAT=true
 
 # Enable memory overcommit
-sysctl -w vm.overcommit_memory=1
+sudo sysctl -w vm.overcommit_memory=1
 
 # Start mining
 echo "Starting Nockchain Miner $i..."
@@ -401,7 +413,7 @@ case "\$1" in
         ;;
     balance)
         cd "\$INSTALL_DIR/miner1"
-        export PATH="/root/.cargo/bin:\$PATH"
+        export PATH="\$HOME/.cargo/bin:\$PATH"
         echo "Checking wallet balance..."
         nockchain-wallet --nockchain-socket .socket/nockchain_npc.sock list-notes
         ;;
@@ -430,7 +442,7 @@ After=network.target
 
 [Service]
 Type=forking
-User=root
+User=$USER
 WorkingDirectory=$INSTALL_DIR
 ExecStart=$INSTALL_DIR/mining_control.sh start
 ExecStop=$INSTALL_DIR/mining_control.sh stop
@@ -441,8 +453,8 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
     
-    mv "/tmp/nockchain-mining.service" "/etc/systemd/system/"
-    systemctl daemon-reload
+    sudo mv "/tmp/nockchain-mining.service" "/etc/systemd/system/"
+    sudo systemctl daemon-reload
     
     print_status "Mining scripts created successfully!"
 }
@@ -520,9 +532,9 @@ show_final_instructions() {
     echo "  • Monitor system:  cd $INSTALL_DIR && ./monitor.sh"
     echo ""
     echo -e "${YELLOW}System Service:${NC}"
-    echo "  • Enable auto-start: systemctl enable nockchain-mining"
-    echo "  • Start service:     systemctl start nockchain-mining"
-    echo "  • Check service:     systemctl status nockchain-mining"
+    echo "  • Enable auto-start: sudo systemctl enable nockchain-mining"
+    echo "  • Start service:     sudo systemctl start nockchain-mining"
+    echo "  • Check service:     sudo systemctl status nockchain-mining"
     echo ""
     echo -e "${YELLOW}Important Notes:${NC}"
     echo "  • Mining requires significant CPU and RAM resources"
@@ -538,22 +550,22 @@ show_final_instructions() {
 
 # Main installation function
 main() {
-    print_header "Nockchain Optimized Mining Installer (ROOT VERSION)"
+    print_header "Nockchain Optimized Mining Installer"
     echo -e "${CYAN}This script will install and optimize Nockchain for mining on Ubuntu 22.04${NC}"
     echo -e "${CYAN}Mining Pubkey: $MINING_PUBKEY${NC}"
     echo ""
-    
-    if [[ $EUID -eq 0 ]]; then
-        echo -e "${RED}WARNING: Running as root is not recommended for security reasons!${NC}"
-        echo -e "${YELLOW}Consider creating a regular user account for mining operations.${NC}"
-        echo ""
-    fi
     
     read -p "Continue with installation? (y/N): " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         echo "Installation cancelled."
         exit 0
+    fi
+    
+    # Check if running as root
+    if [[ $EUID -eq 0 ]]; then
+        print_error "This script should not be run as root"
+        exit 1
     fi
     
     # Run installation steps
