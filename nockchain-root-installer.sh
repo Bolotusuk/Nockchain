@@ -22,7 +22,7 @@ MINING_PUBKEY="3h6rsTmSpQGPF9eTiD1KK4qkKo3a1EdJ9BaE3itdUqhnDL2Hjh4Z6JPaFBHjjcicv
 NOCKCHAIN_REPO="https://github.com/zorp-corp/nockchain"
 INSTALL_DIR="/root/nockchain"  # Changed to root directory
 MINERS_COUNT=4  # Number of miner instances to run
-MIN_RAM_GB=32   # Minimum RAM requirement in GB (reduced for better compatibility)
+MIN_RAM_GB=16   # Minimum RAM requirement in GB (reduced for maximum compatibility)
 
 # Peer list for better connectivity
 PEER_LIST=(
@@ -100,18 +100,24 @@ check_system_requirements() {
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
             exit 1
         fi
-        # Reduce miner count for low RAM systems
+        # Reduce miner count for very low RAM systems
         MINERS_COUNT=1
         print_warning "Reduced miner instances to 1 due to limited RAM"
     elif [[ $total_ram_gb -lt 64 ]]; then
         print_warning "RAM is below optimal 64GB. Adjusting miner configuration for better performance."
-        # Optimize for systems with 32-64GB RAM
+        # Optimize for systems with different RAM levels
         if [[ $total_ram_gb -ge 48 ]]; then
             MINERS_COUNT=3
             print_status "Set miner instances to 3 for ${total_ram_gb}GB RAM"
-        else
+        elif [[ $total_ram_gb -ge 32 ]]; then
             MINERS_COUNT=2
             print_status "Set miner instances to 2 for ${total_ram_gb}GB RAM"
+        elif [[ $total_ram_gb -ge 24 ]]; then
+            MINERS_COUNT=2
+            print_status "Set miner instances to 2 for ${total_ram_gb}GB RAM (with swap optimization)"
+        else
+            MINERS_COUNT=1
+            print_status "Set miner instances to 1 for ${total_ram_gb}GB RAM (with large swap)"
         fi
     fi
     
@@ -146,10 +152,19 @@ optimize_system() {
     sysctl -w vm.overcommit_memory=1
     echo 'vm.overcommit_memory=1' | tee -a /etc/sysctl.conf
     
-    # Optimize swap settings
+    # Optimize swap settings based on RAM
     print_status "Optimizing swap settings..."
-    sysctl -w vm.swappiness=10
-    echo 'vm.swappiness=10' | tee -a /etc/sysctl.conf
+    if [[ $total_ram_gb -lt 32 ]]; then
+        # More aggressive swap usage for low RAM systems
+        sysctl -w vm.swappiness=30
+        echo 'vm.swappiness=30' | tee -a /etc/sysctl.conf
+        print_status "Set swap aggressiveness to 30 for low RAM system"
+    else
+        # Conservative swap usage for higher RAM systems
+        sysctl -w vm.swappiness=10
+        echo 'vm.swappiness=10' | tee -a /etc/sysctl.conf
+        print_status "Set swap aggressiveness to 10 for adequate RAM system"
+    fi
     
     # Increase file descriptor limits
     print_status "Increasing file descriptor limits..."
@@ -167,13 +182,17 @@ optimize_system() {
     if [[ $total_ram_gb -lt 64 ]]; then
         print_status "Creating additional swap space for better performance..."
         if [[ ! -f /swapfile ]]; then
-            # Calculate swap size based on available RAM
+            # Calculate swap size based on available RAM - more aggressive for lower RAM
             if [[ $total_ram_gb -ge 48 ]]; then
                 swap_size="16G"
             elif [[ $total_ram_gb -ge 32 ]]; then
-                swap_size="12G"
+                swap_size="20G"  # Increased for better performance
+            elif [[ $total_ram_gb -ge 24 ]]; then
+                swap_size="24G"  # Large swap for medium RAM systems
+            elif [[ $total_ram_gb -ge 16 ]]; then
+                swap_size="32G"  # Very large swap for low RAM systems
             else
-                swap_size="8G"
+                swap_size="40G"  # Maximum swap for very low RAM
             fi
             
             print_status "Creating ${swap_size} swap file..."
@@ -358,6 +377,13 @@ rm -rf ./.data.nockchain .socket/nockchain_npc.sock
 export PATH="/root/.cargo/bin:\$PATH"
 export RUST_LOG=info,nockchain=info,nockchain_libp2p_io=info,libp2p=info,libp2p_quic=info
 export MINIMAL_LOG_FORMAT=true
+
+# Memory optimizations for low RAM systems
+if [[ $total_ram_gb -lt 32 ]]; then
+    export RUST_MIN_STACK=2097152  # 2MB stack size
+    export MALLOC_ARENA_MAX=2      # Limit memory arenas
+    ulimit -v $((total_ram_gb * 1024 * 1024 * 3 / 4))  # Limit virtual memory to 75% of RAM
+fi
 
 # Enable memory overcommit
 sysctl -w vm.overcommit_memory=1
@@ -545,10 +571,12 @@ show_final_instructions() {
     echo "  • Check service:     systemctl status nockchain-mining"
     echo ""
     echo -e "${YELLOW}Important Notes:${NC}"
-    echo "  • Mining requires significant CPU and RAM resources"
+    echo "  • Mining performance scales with available RAM and CPU"
+    echo "  • Systems with 16-32GB RAM will use large swap files for optimization"
     echo "  • Monitor your system resources regularly"
     echo "  • Backup your wallet keys regularly"
     echo "  • Check logs for mining activity and errors"
+    echo "  • Lower RAM systems may have slower mining but will still function"
     echo ""
     echo -e "${GREEN}Happy Mining! 🚀${NC}"
     echo ""
